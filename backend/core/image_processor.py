@@ -1,12 +1,11 @@
 import rasterio
 import numpy as np
 from rasterio.warp import calculate_default_transform, reproject, Resampling
-from rasterio.vrt import WarpedVRT  # <--- THE MAGIC IMPORT
+from rasterio.vrt import WarpedVRT
 from rasterio.transform import Affine
 from PIL import Image
 import os
 
-# ... keep imports ...
 
 def process_flood_map(input_path, output_png_path):
     print(f"Processing {input_path} (Fast Mode)...")
@@ -20,8 +19,6 @@ def process_flood_map(input_path, output_png_path):
                 vrt.crs, dst_crs, vrt.width, vrt.height, *vrt.bounds)
             
             # ⚡ SPEED FIX: DOWNSAMPLE
-            # We limit the width to 800 pixels. Browser doesn't need more.
-            # This makes it roughly 400x faster (20,000px -> 800px)
             MAX_WIDTH = 800
             scale_factor = MAX_WIDTH / width
             
@@ -58,9 +55,7 @@ def process_flood_map(input_path, output_png_path):
             water_threshold = 40
             flood_mask = np.where((destination < water_threshold) & (destination > 0), 255, 0).astype(np.uint8)
 
-    
-             # --- NEW: CALCULATE REAL AREA ---
-            # 1 pixel in Sentinel-1 (GRD) is roughly 10m x 10m = 100 square meters
+            # --- CALCULATE REAL AREA ---
             pixel_count = np.count_nonzero(flood_mask)
             total_area_sq_meters = pixel_count * 100 
             total_area_km2 = total_area_sq_meters / 1_000_000
@@ -79,10 +74,14 @@ def process_flood_map(input_path, output_png_path):
             final_img.putdata(datas)
             final_img.save(output_png_path, "PNG")
 
-            # 5. RETURN BOUNDS
+            # 5. CALCULATE BOUNDS - FIXED: Now inside the 'with' block
             lon_min, lat_max = new_transform * (0, 0)
             lon_max, lat_min = new_transform * (new_width, new_height)
-        return [[lat_max, lon_min], [lat_min, lon_max]]
+            bounds = [[lat_max, lon_min], [lat_min, lon_max]]
+            
+    # Return bounds after closing the file
+    return bounds
+
 
 if __name__ == "__main__":
     current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -95,6 +94,6 @@ if __name__ == "__main__":
         try:
             bounds = process_flood_map(input_file, output_file)
             print("✅ SUCCESS! Mask Generated.")
-            print(f"Bounds: {bounds}") # Check if these look like GPS (e.g., 13.0, 80.0)
+            print(f"Bounds: {bounds}")
         except Exception as e:
             print(f"Error: {e}")

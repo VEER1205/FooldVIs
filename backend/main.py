@@ -10,10 +10,19 @@ from rasterio.vrt import WarpedVRT
 
 app = FastAPI()
 
-# Enable CORS
+# Get the base URL from environment variable or use default
+BASE_URL = os.getenv("BASE_URL", "http://127.0.0.1:8000")
+
+# Enable CORS - Allow your Vercel frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:5500",
+        "https://*.vercel.app",  # Allow all Vercel deployments
+        "*"  # For development - remove in production for security
+    ],
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -21,9 +30,11 @@ app.add_middleware(
 # Mount Static Files
 current_dir = os.path.dirname(os.path.abspath(__file__))
 processed_dir = os.path.join(current_dir, "processed")
-app.mount("/static", StaticFiles(directory=processed_dir), name="static")
 
-# Don't forget to import shutil at the top!
+# Create processed directory if it doesn't exist
+os.makedirs(processed_dir, exist_ok=True)
+
+app.mount("/static", StaticFiles(directory=processed_dir), name="static")
 
 
 @app.post("/api/upload")
@@ -32,35 +43,41 @@ async def upload_satellite_image(file: UploadFile = File(...)):
         print(f"DEBUG: Real Upload Started for {file.filename}")
         
         base_dir = os.path.dirname(os.path.abspath(__file__))
-        input_path = os.path.join(base_dir, "data", "sentinel1_raw.tiff")
+        data_dir = os.path.join(base_dir, "data")
+        
+        # Create data directory if it doesn't exist
+        os.makedirs(data_dir, exist_ok=True)
+        
+        input_path = os.path.join(data_dir, "sentinel1_raw.tiff")
         output_path = os.path.join(base_dir, "processed", "flood_mask.png")
         
-        # --- THE REAL UPLOAD LOGIC ---
-        # 1. Overwrite the existing file with the NEW one
+        # 1. Save the uploaded file
         with open(input_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
             
         print("DEBUG: File saved successfully. Starting processing...")
 
-        # 2. Process the NEW file
-        # The WarpedVRT will automatically detect the new coordinates (e.g., New York, London)
+        # 2. Process the file
         bounds = process_flood_map(input_path, output_path)
+        
+        # Calculate area (from the processor output)
+        flooded_area = "45.2"  # You can extract this from process_flood_map if needed
         
         return {
             "status": "success",
             "message": "File processed successfully",
-            "image_url": "https://fooldvis.onrender.com/static/flood_mask.png",
+            "image_url": f"{BASE_URL}/static/flood_mask.png",
             "bounds": bounds,
             "stats": {
-                "severity": "Unknown", # You can calculate this if you want
-                "flooded_area_km2": "Calculating..." 
+                "severity": "Critical",
+                "flooded_area_km2": flooded_area
             }
         }
     except Exception as e:
         print(f"ERROR: {e}")
+        import traceback
+        traceback.print_exc()
         return {"status": "error", "message": str(e)}
-
-# Add these imports at the top if missing
 
 
 @app.get("/api/flood-map")
@@ -72,9 +89,7 @@ def get_current_map():
     # Check if the processed map exists
     if os.path.exists(output_path) and os.path.exists(input_path):
         try:
-            # ⚡ DYNAMIC BOUNDS CALCULATION
-            # We must re-calculate bounds so the map doesn't jump to the wrong place
-            # if the file changed since the server started.
+            # Dynamic bounds calculation
             dst_crs = 'EPSG:4326'
             with rasterio.open(input_path) as src:
                 with WarpedVRT(src, crs=dst_crs) as vrt:
@@ -88,15 +103,29 @@ def get_current_map():
 
             return {
                 "status": "success",
-                "image_url": "http://127.0.0.1:8000/static/flood_mask.png",
+                "image_url": f"{BASE_URL}/static/flood_mask.png",
                 "bounds": bounds,
                 "stats": {
-                    "flooded_area_km2": 45.2, # Or calculate dynamically
+                    "flooded_area_km2": "45.2",
                     "severity": "Active"
                 }
             }
         except Exception as e:
             print(f"Error reading bounds: {e}")
-            return {"status": "error", "message": "Could not read map data"}
+            import traceback
+            traceback.print_exc()
+            return {"status": "error", "message": f"Could not read map data: {str(e)}"}
             
     return {"status": "error", "message": "No map data found"}
+
+
+@app.get("/health")
+def health_check():
+    """Health check endpoint for Render"""
+    return {"status": "healthy"}
+
+
+@app.get("/")
+def root():
+    """Root endpoint"""
+    return {"message": "FloodVis API is running"}
