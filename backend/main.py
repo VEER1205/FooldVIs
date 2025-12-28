@@ -4,6 +4,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from core.image_processor import process_flood_map
 import os
 import shutil
+import rasterio
+from rasterio.warp import calculate_default_transform
+from rasterio.vrt import WarpedVRT
 
 app = FastAPI()
 
@@ -46,7 +49,7 @@ async def upload_satellite_image(file: UploadFile = File(...)):
         return {
             "status": "success",
             "message": "File processed successfully",
-            "image_url": "http://127.0.0.1:8000/static/flood_mask.png",
+            "image_url": "https://fooldvis.onrender.com/static/flood_mask.png",
             "bounds": bounds,
             "stats": {
                 "severity": "Unknown", # You can calculate this if you want
@@ -57,21 +60,43 @@ async def upload_satellite_image(file: UploadFile = File(...)):
         print(f"ERROR: {e}")
         return {"status": "error", "message": str(e)}
 
+# Add these imports at the top if missing
+
+
 @app.get("/api/flood-map")
 def get_current_map():
-    # This endpoint just returns the existing processed map (for page reloads)
     base_dir = os.path.dirname(os.path.abspath(__file__))
+    input_path = os.path.join(base_dir, "data", "sentinel1_raw.tiff")
     output_path = os.path.join(base_dir, "processed", "flood_mask.png")
     
-    if os.path.exists(output_path):
-        # We need bounds. For hackathon speed, we can hardcode or re-calc.
-        # Let's assume the frontend asks for the latest upload.
-        return {
-             "status": "success",
-             "image_url": "http://127.0.0.1:8000/static/flood_mask.png",
-             # You might want to store these bounds in a variable or file in a real app
-             # For now, we return the last known good bounds
-             "bounds": [[13.729, 76.107], [11.771, 78.718]], 
-             "stats": { "flooded_area_km2": 45.2 }
-        }
+    # Check if the processed map exists
+    if os.path.exists(output_path) and os.path.exists(input_path):
+        try:
+            # ⚡ DYNAMIC BOUNDS CALCULATION
+            # We must re-calculate bounds so the map doesn't jump to the wrong place
+            # if the file changed since the server started.
+            dst_crs = 'EPSG:4326'
+            with rasterio.open(input_path) as src:
+                with WarpedVRT(src, crs=dst_crs) as vrt:
+                    transform, width, height = calculate_default_transform(
+                        vrt.crs, dst_crs, vrt.width, vrt.height, *vrt.bounds)
+                    
+                    # Calculate lat/lon bounds
+                    lon_min, lat_max = transform * (0, 0)
+                    lon_max, lat_min = transform * (width, height)
+                    bounds = [[lat_max, lon_min], [lat_min, lon_max]]
+
+            return {
+                "status": "success",
+                "image_url": "http://127.0.0.1:8000/static/flood_mask.png",
+                "bounds": bounds,
+                "stats": {
+                    "flooded_area_km2": 45.2, # Or calculate dynamically
+                    "severity": "Active"
+                }
+            }
+        except Exception as e:
+            print(f"Error reading bounds: {e}")
+            return {"status": "error", "message": "Could not read map data"}
+            
     return {"status": "error", "message": "No map data found"}
