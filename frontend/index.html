@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FloodVis | Mission Control</title>
+    
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+    
+    <style>
+        body { margin: 0; background-color: #1a1a1a; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; overflow: hidden; }
+        
+        /* The Map Container */
+        #map { height: 100vh; width: 100%; z-index: 1; }
+
+        /* --- UI: LEFT CONTROL PANEL --- */
+        .control-panel {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            z-index: 1000;
+            background: rgba(0, 0, 0, 0.85);
+            padding: 20px;
+            border-radius: 12px;
+            color: white;
+            width: 300px;
+            border-left: 4px solid #00d2ff;
+            backdrop-filter: blur(10px);
+            box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+        }
+
+        h2 { margin: 0 0 10px 0; font-size: 18px; color: #00d2ff; text-transform: uppercase; letter-spacing: 1px; }
+        p { font-size: 12px; color: #ccc; margin-bottom: 15px; }
+
+        /* Upload Button Styling */
+        .upload-btn-wrapper {
+            position: relative;
+            overflow: hidden;
+            display: inline-block;
+            width: 100%;
+        }
+
+        .btn {
+            border: 2px dashed #444;
+            color: #ddd;
+            background-color: rgba(255,255,255,0.05);
+            padding: 15px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: bold;
+            width: 100%;
+            cursor: pointer;
+            transition: all 0.3s;
+            text-align: center;
+        }
+
+        .btn:hover {
+            border-color: #00d2ff;
+            color: #fff;
+            background-color: rgba(0, 210, 255, 0.1);
+        }
+
+        .upload-btn-wrapper input[type=file] {
+            font-size: 100px;
+            position: absolute;
+            left: 0;
+            top: 0;
+            opacity: 0;
+            cursor: pointer;
+        }
+
+        /* Loading Spinner Text */
+        #loader {
+            display: none;
+            margin-top: 15px;
+            font-size: 13px;
+            color: #00d2ff;
+            font-weight: bold;
+            text-align: center;
+        }
+
+        /* --- UI: RIGHT STATS CARD --- */
+        .stats-card {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            z-index: 1000;
+            background: rgba(0, 0, 0, 0.85);
+            color: white;
+            padding: 20px;
+            border-radius: 12px;
+            border-right: 4px solid #ff4444;
+            width: 220px;
+            text-align: right;
+            backdrop-filter: blur(10px);
+        }
+        .stats-value { font-size: 28px; font-weight: bold; color: #ff4444; margin: 5px 0; }
+        .label { font-size: 11px; color: #aaa; text-transform: uppercase; letter-spacing: 1px; }
+
+        /* --- ANIMATION: PULSING RED FLOOD LAYER --- */
+        .flood-layer { 
+            animation: pulse 4s infinite; 
+            /* Ensure it sits above base map but below labels if possible */
+            z-index: 500; 
+        }
+        
+        @keyframes pulse { 
+            0% { opacity: 0.7; } 
+            50% { opacity: 0.9; } 
+            100% { opacity: 0.7; } 
+        }
+    </style>
+</head>
+<body>
+
+    <div id="map"></div>
+
+    <div class="control-panel">
+        <h2>🛰️ Mission Control</h2>
+        <p>Upload raw Sentinel-1 (TIFF) data for instant flood analysis.</p>
+        
+        <div class="upload-btn-wrapper">
+            <button class="btn">📂 Upload Satellite Image</button>
+            <input type="file" id="fileInput" accept=".tiff,.tif" onchange="uploadFile()" />
+        </div>
+        
+        <div id="loader">⚙️ Initializing System...</div>
+    </div>
+
+    <div class="stats-card">
+        <h2>Flood Impact</h2>
+        <div class="label">Total Affected Area</div>
+        <div class="stats-value" id="area-stat">-- km²</div>
+        <br>
+        <div class="label">Status</div>
+        <div style="color: #ff9900; font-weight: bold; font-size: 14px;" id="status-text">WAITING FOR DATA</div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    
+    <script>
+        // --- 1. INITIALIZE MAP ---
+        // Centered on India to start
+        var map = L.map('map').setView([20.5937, 78.9629], 5);
+
+        // Add Dark Matter Base Map
+        L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+            attribution: '&copy; OpenStreetMap &copy; CARTO',
+            maxZoom: 20
+        }).addTo(map);
+
+        var currentLayer = null;
+
+        // --- 2. UPLOAD LOGIC ---
+        async function uploadFile() {
+            const fileInput = document.getElementById('fileInput');
+            const file = fileInput.files[0];
+            const loader = document.getElementById('loader');
+
+            if (!file) return;
+
+            console.log("🚀 User selected file:", file.name);
+
+            // Show Loading UI
+            loader.style.display = 'block';
+            loader.innerText = `📡 Uploading & Processing...`;
+            loader.style.color = "#00d2ff";
+
+            const formData = new FormData();
+            formData.append('file', file);
+
+            try {
+                // Connect to Backend
+                const response = await fetch('http://127.0.0.1:8000/api/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                const data = await response.json();
+                console.log("📦 Backend Data:", data);
+
+                if (data.status === 'success') {
+                    loader.innerText = "✅ Processing Complete!";
+                    loader.style.color = "#00ff00";
+                    updateMap(data);
+                } else {
+                    loader.innerText = "❌ Error: " + data.message;
+                    loader.style.color = "#ff4444";
+                }
+            } catch (error) {
+                console.error("Connection Error:", error);
+                loader.innerText = "❌ Network Failed (Check Console)";
+                loader.style.color = "#ff4444";
+            } finally {
+                // Allow re-uploading the same file if needed
+                fileInput.value = ''; 
+            }
+        }
+
+        // --- 3. ROBUST MAP UPDATE FUNCTION ---
+        function updateMap(data) {
+            console.log("🗺️ Updating Map Visuals...");
+            
+            try {
+                // A. Clear old layer
+                if (currentLayer) {
+                    map.removeLayer(currentLayer);
+                }
+
+                // B. Parse Bounds safely for Leaflet
+                // Backend sends: [[LatMax, LonMin], [LatMin, LonMax]]
+                // We convert strictly to Leaflet LatLng objects
+                var p1 = L.latLng(data.bounds[0][0], data.bounds[0][1]); // Top Left
+                var p2 = L.latLng(data.bounds[1][0], data.bounds[1][1]); // Bottom Right
+                var bounds = L.latLngBounds(p1, p2);
+
+                console.log("📍 Zooming to:", bounds);
+
+                // C. Add Image Overlay with Cache Busting
+                // "?t=" + time forces the browser to load the NEW image, not the cached one
+                var imageUrl = data.image_url + "?t=" + new Date().getTime();
+
+                currentLayer = L.imageOverlay(imageUrl, bounds, {
+                    opacity: 0.8,
+                    className: 'flood-layer', // Triggers the CSS pulse animation
+                    interactive: true
+                }).addTo(map);
+
+                // D. ZOOM TO THE IMAGE
+                map.fitBounds(bounds);
+
+                // E. Update UI Stats
+                if (data.stats) {
+                    document.getElementById('area-stat').innerText = data.stats.flooded_area_km2 + " km²";
+                    document.getElementById('status-text').innerText = "CRITICAL ALERT";
+                    document.getElementById('status-text').style.color = "#ff4444";
+                }
+
+            } catch (err) {
+                console.error("❌ Map Drawing Failed:", err);
+                alert("Error displaying map: " + err.message);
+            }
+        }
+    </script>
+</body>
+</html>
